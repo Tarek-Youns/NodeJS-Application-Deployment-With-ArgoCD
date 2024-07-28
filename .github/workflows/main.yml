@@ -1,0 +1,177 @@
+name: CI/CD/K8S
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - '[0-9]+.x'
+    tags:
+      - '*'
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+jobs:
+  build:
+    name: Node 18 - On ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ ubuntu-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+     
+# Bulid infra using terraform
+  infra:
+
+    name: Provision aws infrastructure using Terraform
+    runs-on: ubuntu-latest
+    outputs:
+        eip: ${{ steps.tarek.outputs.ec2_address }}
+    needs: [ build ]
+    env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}     
+      
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+         
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v1
+          
+      - name: Terraform Init
+        run: terraform -chdir=terraform init
+    
+      - name: Terraform plan
+        run: terraform -chdir=terraform plan
+          
+      - name: Terraform Apply
+        run: terraform -chdir=terraform apply --auto-approve
+          
+    
+      - name: Get Instance IP
+        id: tarek
+        run: |
+            terraform-bin -chdir=terraform output -raw eip_value > ip_address.txt
+            echo "ec2_address=$(cat ip_address.txt)" >> $GITHUB_OUTPUT
+# Deployment on K8S cluter  
+
+
+  docker_install: 
+    runs-on: ubuntu-latest
+    needs: [ infra ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: executing remote ssh commands using password
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.infra.outputs.eip }}
+          username: ubuntu
+          key: ${{ secrets.KEY }}
+          port: 22
+          script: |
+          
+            sudo apt update -y
+            sudo apt install apt-transport-https ca-certificates curl software-properties-common -y
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt update -y  
+            apt-cache policy docker-ce 
+            sudo apt install docker-ce -y
+            sudo usermod -aG docker $USER && newgrp docker
+
+  minikube_install: 
+    runs-on: ubuntu-latest
+    needs: [ docker_install , infra]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: executing remote ssh commands using password
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.infra.outputs.eip }} 
+          username: ubuntu
+          key: ${{ secrets.KEY }}
+          port: 22
+          script: | 
+            echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+            curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+            sudo apt-get update -y
+            sudo apt-get install -y kubectl
+            curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+            sudo install minikube-linux-amd64 /usr/local/bin/minikube && rm minikube-linux-amd64
+            sudo usermod -aG docker $USER && newgrp docker
+            minikube start --driver=docker
+            kubectl version 
+
+  helm_installation:
+    runs-on: ubuntu-latest
+    needs: [ minikube_install , infra]
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v2 
+      - name: executing remote ssh commands using password
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.infra.outputs.eip }} 
+          username: ubuntu
+          key: ${{ secrets.KEY }}
+          port: 22
+          script: | 
+           minikube start  
+           curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+           sudo apt-get install apt-transport-https --yes
+           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+           sudo apt-get update
+           sudo apt-get install helm
+
+
+  argocd_installation:
+    runs-on: ubuntu-latest
+    needs: [ minikube_install , infra , helm_installation]
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v2 
+      - name: executing remote ssh commands using password
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.infra.outputs.eip }} 
+          username: ubuntu
+          key: ${{ secrets.KEY }}
+          port: 22
+          script: |   
+           
+           helm repo add argo https://argoproj.github.io/argo-helm
+           helm repo update
+           helm install argo argo/argo-cd
+           kubectl patch svc argo-argocd-server -n default -p '{"spec": {"type": "NodePort", "ports": [{"port": 443, "targetPort": 443, "nodePort": 32000}]}}'
+           touch argocd_password
+           kubectl -n default get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 --decode >> argocd_password
+
+
+
+
+                    
+  
+           
+           
+
+           
+# becareful if u will try this code , do not forget comment this step
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve 
