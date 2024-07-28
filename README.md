@@ -13,7 +13,8 @@
 
 
 ### Description
-This project is end to end devops project that deploy nodejs application 
+This project uses Github-Actions to provision an EC2 then deploy a simple minikube container on it before installing argocd through helm, it provisions and configures the infrastructure.
+Then deploys the nodejs app on the minikube node alongside promethues and graphana for monitoring.
 
 ### DevOps Tools
 - Git
