@@ -32,10 +32,10 @@ you have to clone this repo:
 ```
 git clone https://github.com/Tarek-Youns/NodeJS-Application-Deployment-With-ArgoCD.git
 ```
-when you push this code in your repo the workflow will be tragered or you can run it manually
+when you push this code to your repo the workflow will be triggered or you can run it manually
 
 ### Usage
-you have to make port forword to ues argocd:
+on minikube you have to port-forward it before you can access it:
 ```
 kubectl port-forward deployment/argo-argocd-server 3000:8080 --address 0.0.0.0
 ```
